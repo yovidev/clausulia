@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     max_pages: int = Field(default=500, gt=0)
 
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_provider: Literal["fastembed", "fake"] = "fastembed"
+    embedding_cache_dir: str | None = None
+    embedding_batch_size: int = Field(default=32, gt=0)
 
     chunk_size: int = Field(default=1000, ge=200)
     chunk_overlap: int = Field(default=150, ge=0)
