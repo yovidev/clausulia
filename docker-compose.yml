@@ -1,3 +1,12 @@
+# Configuración común de los servicios que usan la imagen del backend
+x-backend: &backend
+  build: ./backend
+  image: clausulia-backend
+  env_file: .env
+  volumes:
+    - uploads:/data/uploads
+    - models:/models
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -32,5 +41,36 @@ services:
       - "4317:4317"     # OTLP gRPC (recibe trazas)
       - "4318:4318"     # OTLP HTTP
 
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    <<: *backend
+    # --beat embebido: un solo proceso programa el barrido de atascados (MVP)
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO",
+              "--concurrency=2", "--beat", "-E"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  flower:
+    <<: *backend
+    command: ["celery", "-A", "app.worker.celery_app", "flower", "--port=5555"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  uploads:
+  models:

@@ -25,8 +25,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Usuario sin privilegios y carpeta para los PDFs subidos
+# Usuario sin privilegios, carpeta para los PDFs subidos y caché del modelo de embeddings
 RUN useradd --create-home --uid 1000 app \
-    && mkdir -p /data/uploads \
-    && chown -R app:app /data /app
+    && mkdir -p /data/uploads /models \
+    && chown -R app:app /data /models /app
 USER app
