@@ -21,11 +21,22 @@ class Settings(BaseSettings):
     embedding_provider: Literal["fastembed", "fake"] = "fastembed"
     embedding_cache_dir: str | None = None
     embedding_batch_size: int = Field(default=32, gt=0)
+    # Antepone "Documento: <nombre>" al texto de cada chunk al vectorizarlo (no al guardarlo).
+    # Cambiarlo exige reprocesar los documentos para que los vectores sean coherentes.
+    embed_document_title: bool = False
 
     chunk_size: int = Field(default=1000, ge=200)
     chunk_overlap: int = Field(default=150, ge=0)
     retrieval_k: int = Field(default=6, gt=0, le=50)
-    similarity_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Similitud mínima del mejor chunk para llamar al LLM; si se llama, recibe los k.
+    # Valores calibrados con eval/ (ver eval/results.md).
+    similarity_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # vector: solo similitud coseno. hybrid: coseno + full-text combinados con RRF.
+    retrieval_mode: Literal["vector", "hybrid"] = "hybrid"
+    # Candidatos que aporta cada rama (coseno y full-text) antes de fusionar.
+    hybrid_candidates: int = Field(default=20, gt=0, le=200)
+    # Constante de Reciprocal Rank Fusion: puntuación = suma de 1 / (rrf_k + posición).
+    rrf_k: int = Field(default=60, gt=0)
     # Similitud mínima del mejor chunk citado para cada nivel de confianza (se calibran).
     confidence_high_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
     confidence_medium_similarity: float = Field(default=0.45, ge=0.0, le=1.0)

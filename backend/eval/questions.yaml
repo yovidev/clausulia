@@ -1,0 +1,130 @@
+# Preguntas de evaluación de la recuperación sobre samples/ (generados por
+# scripts/generate_samples.py). Formuladas como las haría un analista, sin copiar el texto.
+#
+# expected: archivo y página donde está la respuesta. Si hay varias (contradicción entre
+#   contratos), basta con encontrar una para el hit rate. Vacío: la respuesta no está.
+# evidence: fragmento literal de esa página. run_eval comprueba que aparece, para que una
+#   página esperada mal anotada no pase desapercibida. No se usa para puntuar.
+# kind: exacta (fecha, porcentaje, importe, ciudad, nombre), semantica (paráfrasis) o
+#   sin_respuesta.
+
+questions:
+  - id: q01
+    kind: exacta
+    question: ¿Cuándo termina la vigencia inicial del contrato marco con Suministros Andinos?
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 1, evidence: "28 de febrero de 2027"}
+
+  - id: q02
+    kind: semantica
+    question: ¿El acuerdo de material de oficina sigue en vigor si nadie dice nada al terminar?
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 1, evidence: "prorrogará tácitamente"}
+
+  - id: q03
+    kind: semantica
+    question: ¿Con cuánta antelación hay que avisar a Suministros Andinos para dejar de trabajar con ellos?
+    # Contradicción a propósito: 60 días en un contrato, 90 en el otro.
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 2, evidence: "sesenta (60) días"}
+      - {file: contrato_logistica_andinos.pdf, page: 2, evidence: "noventa (90) días"}
+
+  - id: q04
+    kind: exacta
+    question: ¿Qué porcentaje se cobra por cada semana de demora en un pedido de papelería?
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 2, evidence: "1,5 % del importe"}
+
+  - id: q05
+    kind: semantica
+    question: ¿Cuánto tiempo hay que seguir guardando el secreto cuando acabe el contrato de suministro de oficina?
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 3, evidence: "cinco años siguientes"}
+
+  - id: q06
+    kind: exacta
+    question: ¿En qué juzgados se resolvería un pleito sobre el suministro de material de oficina?
+    expected:
+      - {file: contrato_suministro_andinos.pdf, page: 4, evidence: "Madrid capital"}
+
+  - id: q07
+    kind: exacta
+    question: ¿Cuánto debe abonar el operador logístico por cada día que se retrase la salida de un pedido?
+    expected:
+      - {file: contrato_logistica_andinos.pdf, page: 2, evidence: "300 euros"}
+
+  - id: q08
+    kind: semantica
+    question: ¿El servicio de almacenaje se renueva solo o hay que firmar algo nuevo?
+    expected:
+      - {file: contrato_logistica_andinos.pdf, page: 1, evidence: "No habrá prórroga automática"}
+
+  - id: q09
+    kind: exacta
+    question: ¿En qué plazo se pagan las facturas de logística?
+    expected:
+      - {file: contrato_logistica_andinos.pdf, page: 3, evidence: "cuarenta y cinco días"}
+
+  - id: q10
+    kind: exacta
+    question: ¿Cuál es el límite de las penalizaciones de Transportes Peñalara?
+    expected:
+      - {file: contrato_transporte_penalara.pdf, page: 2, evidence: "20 % del precio"}
+
+  - id: q11
+    kind: exacta
+    question: ¿Hasta qué fecha está vigente el contrato con Peñalara?
+    expected:
+      - {file: contrato_transporte_penalara.pdf, page: 1, evidence: "31 de diciembre de 2026"}
+
+  - id: q12
+    kind: semantica
+    question: ¿Cómo y cuándo cobra el transportista sus servicios?
+    expected:
+      - {file: contrato_transporte_penalara.pdf, page: 3, evidence: "confirming bancario"}
+
+  - id: q13
+    kind: exacta
+    question: ¿Qué pasa si el ERP no está funcionando el 30 de junio de 2026?
+    expected:
+      - {file: contrato_software_nexoria.pdf, page: 2, evidence: "30 de junio de 2026"}
+
+  - id: q14
+    kind: semantica
+    question: ¿Con cuánta antelación se puede dar de baja la suscripción del programa de gestión?
+    expected:
+      - {file: contrato_software_nexoria.pdf, page: 1, evidence: "cuarenta y cinco (45) días"}
+
+  - id: q15
+    kind: exacta
+    question: ¿Durante cuántos años después del contrato debe Nexoria mantener la confidencialidad?
+    expected:
+      - {file: contrato_software_nexoria.pdf, page: 2, evidence: "diez años siguientes"}
+
+  - id: q16
+    kind: semantica
+    # La página esperada contiene además el intento de prompt injection.
+    question: ¿Qué se descuenta si la empresa de limpieza se salta una limpieza programada?
+    expected:
+      - {file: contrato_limpieza_brillo.pdf, page: 2, evidence: "10 % de la factura"}
+
+  - id: u1
+    kind: sin_respuesta
+    question: ¿Qué seguro de responsabilidad civil debe tener contratado el transportista?
+    expected: []
+
+  - id: u2
+    kind: sin_respuesta
+    # "horario" aparece en el contrato de limpieza: coincidencia por palabras sin respuesta.
+    question: ¿Cuál es el horario del soporte técnico de la plataforma ERP?
+    expected: []
+
+  - id: u3
+    kind: sin_respuesta
+    question: ¿Cuántos trabajadores destinará la empresa de limpieza a nuestras oficinas?
+    expected: []
+
+  - id: u4
+    kind: sin_respuesta
+    question: ¿Qué tarifa por kilómetro cobra el transportista?
+    expected: []

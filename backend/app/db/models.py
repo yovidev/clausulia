@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Parte del esquema: cambiarla exige migrar y reprocesar todos los documentos.
@@ -77,6 +79,7 @@ class Chunk(Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_chunks_content_tsv", "content_tsv", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -87,6 +90,11 @@ class Chunk(Base):
     page_number: Mapped[int]
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    # Columna generada por Postgres para la búsqueda full-text (modo híbrido): nunca se
+    # escribe desde Python. deferred: no se carga al leer un Chunk completo.
+    content_tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('spanish', content)", persisted=True), deferred=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     document: Mapped[Document] = relationship(back_populates="chunks")

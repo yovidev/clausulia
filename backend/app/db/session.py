@@ -9,8 +9,12 @@ from app.core.config import get_settings
 
 @lru_cache
 def get_engine() -> Engine:
-    # pool_pre_ping detecta conexiones muertas (por ejemplo, si Postgres se reinició)
-    return create_engine(get_settings().database_url, pool_pre_ping=True)
+    # pool_pre_ping detecta conexiones muertas (por ejemplo, si Postgres se reinició).
+    # connect_timeout: sin él, psycopg puede esperar sin fin a un Postgres que no responde;
+    # con él, la conexión falla en 5 s y la API devuelve 503 DATABASE_UNAVAILABLE.
+    return create_engine(
+        get_settings().database_url, pool_pre_ping=True, connect_args={"connect_timeout": 5}
+    )
 
 
 @lru_cache

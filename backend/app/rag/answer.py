@@ -74,14 +74,17 @@ def _answer(
         k=settings.retrieval_k,
         threshold=settings.similarity_threshold,
         document_ids=ask.document_ids,
+        mode=settings.retrieval_mode,
+        candidates=settings.hybrid_candidates,
+        rrf_k=settings.rrf_k,
     )
     outcome = AnswerOutcome(
         response=_insufficient(), similarities=[c.similarity for c in retrieval.chunks]
     )
-    if not retrieval.relevant:
+    if not retrieval.has_evidence:
         return outcome  # sin evidencia no se llama al LLM
 
-    answer = _ask_llm(llm, build_user_prompt(ask.question, retrieval.relevant), outcome)
+    answer = _ask_llm(llm, build_user_prompt(ask.question, retrieval.chunks), outcome)
     if answer is None:
         outcome.response = AskOut(
             status="rejected", answer=None, citations=[], confidence=None, has_conflict=False
@@ -91,7 +94,8 @@ def _answer(
         return outcome
 
     with tracer.start_as_current_span("validate_answer") as span:
-        by_id = {str(c.chunk_id): c for c in retrieval.relevant}
+        # Solo valen citas a chunks que se enviaron al LLM (los k recuperados).
+        by_id = {str(c.chunk_id): c for c in retrieval.chunks}
         cited = [by_id[i] for i in dict.fromkeys(answer.citations) if i in by_id]
         discarded = len(answer.citations) - len(cited)  # inventadas o repetidas
         span.set_attribute("citations.valid", len(cited))

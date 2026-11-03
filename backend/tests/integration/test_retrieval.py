@@ -11,7 +11,7 @@ from app.db.models import Document, DocumentStatus
 from app.ingestion.embeddings import FakeEmbedder
 from app.ingestion.extraction import PypdfExtractor
 from app.ingestion.service import run_ingestion
-from app.retrieval.search import search_chunks
+from app.retrieval.search import RetrievalMode, RetrievalResult, search_chunks
 from tests.factories import make_pdf
 
 pytestmark = pytest.mark.integration
@@ -170,3 +170,146 @@ def test_iterative_scan_applies_only_to_the_current_transaction(
 
     assert inside == "strict_order"
     assert after == "off"
+
+
+# --- Modo hybrid ---
+# Con FakeEmbedder cada palabra pesa lo mismo en el vector, también las vacías ("y", "lo",
+# "de"): el nombre exacto queda diluido y los chunks con muchas palabras comunes ganan por
+# coseno. El full-text descarta las palabras vacías y se queda con el nombre o la fecha.
+NAME_QUESTION = "Y lo de Peñalara?"
+DATE_QUESTION = "Y lo del 15/03/2027?"
+NOISE_PAGES = [
+    "Y lo de la entrega y lo de la factura se revisan de la forma habitual.",
+    "Y lo de la garantia y lo de la calidad se revisan de la forma habitual.",
+    "Y lo de los envios y lo de los almacenes se revisan de la forma habitual.",
+]
+NAME_PAGE = "Transportes Peñalara presta el servicio logistico del almacen central."
+DATE_PAGE = "La primera entrega se realizara el 15/03/2027 en el almacen central."
+
+
+def _hybrid(
+    session: Session,
+    embedder: FakeEmbedder,
+    question: str,
+    org: str = "org-a",
+    k: int = 2,
+    threshold: float = 0.0,
+    document_ids: list[uuid.UUID] | None = None,
+) -> RetrievalResult:
+    return search_chunks(
+        session,
+        embedder,
+        question,
+        org,
+        k=k,
+        threshold=threshold,
+        document_ids=document_ids,
+        mode="hybrid",
+        candidates=10,
+        rrf_k=60,
+        text_margin=0.10,
+    )
+
+
+def test_hybrid_finds_exact_name_that_vector_misses(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    _ingest(session_factory, settings, [*NOISE_PAGES, NAME_PAGE])
+
+    with session_factory() as session:
+        by_vector = search_chunks(session, embedder, NAME_QUESTION, "org-a", k=2, threshold=0.0)
+        hybrid = _hybrid(session, embedder, NAME_QUESTION)
+        everything = search_chunks(session, embedder, NAME_QUESTION, "org-a", k=10, threshold=0.0)
+
+    assert NAME_PAGE not in [c.content for c in by_vector.chunks]
+    top = hybrid.chunks[0]
+    assert (top.content, top.page_number, top.text_match) == (NAME_PAGE, 4, True)
+    # La similitud es la coseno real, la misma que calcula el modo vector.
+    assert top.similarity == next(c.similarity for c in everything.chunks if c.content == NAME_PAGE)
+
+
+def test_hybrid_finds_exact_date(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    _ingest(session_factory, settings, [*NOISE_PAGES, DATE_PAGE])
+
+    with session_factory() as session:
+        result = _hybrid(session, embedder, DATE_QUESTION, k=1)
+
+    # El parser de Postgres guarda la fecha como un solo término: '15/03/2027'.
+    assert [(c.content, c.text_match) for c in result.chunks] == [(DATE_PAGE, True)]
+
+
+def test_hybrid_respects_org_in_both_branches(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    own = _ingest(session_factory, settings, NOISE_PAGES, org="org-a")
+    # Solo la otra organización tiene el chunk que coincide por palabras.
+    _ingest(session_factory, settings, [*NOISE_PAGES, NAME_PAGE], org="org-b")
+
+    with session_factory() as session:
+        result = _hybrid(session, embedder, NAME_QUESTION, k=10)
+
+    assert len(result.chunks) == len(NOISE_PAGES)
+    assert {c.document_id for c in result.chunks} == {own}
+    assert not any(c.text_match for c in result.chunks)
+
+
+def test_hybrid_text_branch_respects_status_and_document_ids(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    noise = _ingest(session_factory, settings, NOISE_PAGES)
+    named = _ingest(session_factory, settings, [NAME_PAGE], filename="peñalara.pdf")
+
+    with session_factory() as session:
+        filtered = _hybrid(session, embedder, NAME_QUESTION, k=10, document_ids=[noise])
+    with session_factory() as session, session.begin():
+        session.get_one(Document, named).status = DocumentStatus.PROCESSING
+    with session_factory() as session:
+        not_ready = _hybrid(session, embedder, NAME_QUESTION, k=10)
+
+    for result in (filtered, not_ready):
+        assert {c.document_id for c in result.chunks} == {noise}
+        assert not any(c.text_match for c in result.chunks)
+
+
+def test_hybrid_text_match_lowers_threshold_only_by_the_margin(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    _ingest(session_factory, settings, [*NOISE_PAGES, NAME_PAGE])
+    with session_factory() as session:
+        similarity = _hybrid(session, embedder, NAME_QUESTION).chunks[0].similarity
+
+    def relevant(threshold: float, mode: RetrievalMode) -> list[str]:
+        with session_factory() as session:
+            result = search_chunks(
+                session,
+                embedder,
+                NAME_QUESTION,
+                "org-a",
+                k=10,
+                threshold=threshold,
+                mode=mode,
+                text_margin=0.10,
+            )
+        return [c.content for c in result.relevant]
+
+    # Por debajo del umbral pero dentro del margen: el dato exacto no se pierde...
+    assert NAME_PAGE in relevant(similarity + 0.05, "hybrid")
+    # ...en modo vector ese mismo chunk queda fuera...
+    assert NAME_PAGE not in relevant(similarity + 0.05, "vector")
+    # ...y fuera del margen, coincidir por palabras no basta.
+    assert NAME_PAGE not in relevant(similarity + 0.15, "hybrid")
+
+
+def test_vector_mode_ignores_full_text(
+    session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
+) -> None:
+    _ingest(session_factory, settings, [*NOISE_PAGES, NAME_PAGE])
+
+    with session_factory() as session:
+        result = search_chunks(session, embedder, NAME_QUESTION, "org-a", k=4, threshold=0.0)
+
+    assert not any(c.text_match for c in result.chunks)
+    similarities = [c.similarity for c in result.chunks]
+    assert similarities == sorted(similarities, reverse=True)
