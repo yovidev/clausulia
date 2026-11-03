@@ -68,8 +68,8 @@ def test_password_protected_pdf_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(PdfExtractionError) as exc:
         extractor.extract(locked, max_pages=10)
     assert exc.value.code == "ENCRYPTED_PDF"
-    
-    
+
+
 def test_missing_file_raises_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         extractor.extract(tmp_path / "no-existe.pdf", max_pages=10)

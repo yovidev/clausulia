@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     default_org_id: str = "default"
+    stuck_after_minutes: int = Field(default=10, gt=0)
+    max_ingest_attempts: int = Field(default=5, gt=0)
 
     @model_validator(mode="after")
     def check_consistency(self) -> Self:
