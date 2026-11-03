@@ -8,11 +8,15 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import ask, documents, health
 from app.api.errors import ApiError, error_response
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.core.telemetry import setup_telemetry
 from app.llm.base import LLMProviderError, LLMRateLimitError, LLMTimeoutError
 from app.rag.errors import DocumentNotFoundError, DocumentNotReadyError
 
@@ -94,7 +98,12 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
+    configure_logging(settings.log_level)
     app = FastAPI(title="Clausulia")
+    if setup_telemetry(settings.otel_service_name or "clausulia-api", settings):
+        # /health se excluye: el healthcheck de Docker llenaría Jaeger de trazas sin interés.
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
     app.include_router(health.router)
     app.include_router(documents.router)
     app.include_router(ask.router)

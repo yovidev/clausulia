@@ -1,13 +1,18 @@
 """Ingesta de un documento: extraer, trocear, vectorizar y guardar de forma atómica."""
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import Span, Status, StatusCode
+from opentelemetry.util.types import AttributeValue
 from sqlalchemy import delete, insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
+from app.core.telemetry import timed_span
 from app.db.models import Chunk, Document, DocumentStatus
 from app.ingestion.chunking import chunk_pages
 from app.ingestion.embeddings import Embedder
@@ -15,6 +20,7 @@ from app.ingestion.extraction import PdfExtractionError, PdfExtractor
 from app.ingestion.storage import upload_path
 
 log = structlog.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 def run_ingestion(
@@ -30,29 +36,62 @@ def run_ingestion(
     Los errores transitorios (base de datos, red) se propagan para que Celery reintente.
     Los errores permanentes (PDF inválido) marcan el documento como fallido.
     """
-    sha256 = _claim(session_factory, document_id)
-    if sha256 is None:
+    with timed_span(
+        tracer,
+        "ingest.document",
+        {"document.id": str(document_id)},
+        duration_attribute="ingest.duration_ms",
+    ) as span:
+        status = _ingest(span, document_id, session_factory, extractor, embedder, settings)
+        span.set_attribute("ingest.status", status.value if status else "skipped")
+        return status
+
+
+def _ingest(
+    span: Span,
+    document_id: uuid.UUID,
+    session_factory: sessionmaker[Session],
+    extractor: PdfExtractor,
+    embedder: Embedder,
+    settings: Settings,
+) -> DocumentStatus | None:
+    claim = _claim(session_factory, document_id)
+    if claim is None:
         return None
+    span.set_attribute("organization.id", claim.organization_id)
+    span.set_attribute("ingest.attempt", claim.attempt)
 
     try:
-        pages = extractor.extract(upload_path(settings.upload_dir, sha256), settings.max_pages)
+        with tracer.start_as_current_span("pdf.extract") as extract_span:
+            pages = extractor.extract(
+                upload_path(settings.upload_dir, claim.sha256), settings.max_pages
+            )
+            extract_span.set_attribute("pdf.pages", len(pages))
     except PdfExtractionError as exc:
-        mark_failed(session_factory, document_id, exc.code, exc.message)
-        return DocumentStatus.FAILED
+        return _fail(span, session_factory, document_id, exc.code, exc.message)
     except FileNotFoundError:
-        mark_failed(
-            session_factory, document_id, "FILE_MISSING", "El archivo subido no se encuentra"
+        return _fail(
+            span, session_factory, document_id, "FILE_MISSING", "El archivo subido no se encuentra"
         )
-        return DocumentStatus.FAILED
 
-    chunks = chunk_pages(pages, settings.chunk_size, settings.chunk_overlap)
+    with tracer.start_as_current_span("chunking") as chunking_span:
+        chunks = chunk_pages(pages, settings.chunk_size, settings.chunk_overlap)
+        chunking_span.set_attribute("chunks.count", len(chunks))
     if not chunks:
-        mark_failed(session_factory, document_id, "NO_TEXT_LAYER", "El PDF no tiene texto")
-        return DocumentStatus.FAILED
+        return _fail(span, session_factory, document_id, "NO_TEXT_LAYER", "El PDF no tiene texto")
 
-    vectors = embedder.embed_documents([c.content for c in chunks])
+    embed_attributes: dict[str, AttributeValue] = {
+        "embeddings.count": len(chunks),
+        "embeddings.model": embedder.name,
+    }
+    with tracer.start_as_current_span("embeddings", attributes=embed_attributes):
+        vectors = embedder.embed_documents([c.content for c in chunks])
 
-    with session_factory() as session, session.begin():
+    with (
+        tracer.start_as_current_span("db.write_chunks", attributes={"chunks.count": len(chunks)}),
+        session_factory() as session,
+        session.begin(),
+    ):
         document = session.get(Document, document_id, with_for_update=True)
         if document is None:
             return None
@@ -80,8 +119,15 @@ def run_ingestion(
     return DocumentStatus.READY
 
 
-def _claim(session_factory: sessionmaker[Session], document_id: uuid.UUID) -> str | None:
-    """Marca el documento como en proceso. Devuelve su hash, o None si no hay que procesarlo."""
+@dataclass(frozen=True)
+class _Claim:
+    sha256: str
+    organization_id: str
+    attempt: int
+
+
+def _claim(session_factory: sessionmaker[Session], document_id: uuid.UUID) -> _Claim | None:
+    """Marca el documento como en proceso. Devuelve lo necesario para procesarlo, o None."""
     with session_factory() as session, session.begin():
         document = session.get(Document, document_id, with_for_update=True)
         if document is None:
@@ -95,7 +141,21 @@ def _claim(session_factory: sessionmaker[Session], document_id: uuid.UUID) -> st
         document.processing_started_at = datetime.now(UTC)
         document.error_code = None
         document.error_message = None
-        return document.sha256
+        return _Claim(document.sha256, document.organization_id, document.attempts)
+
+
+def _fail(
+    span: Span,
+    session_factory: sessionmaker[Session],
+    document_id: uuid.UUID,
+    code: str,
+    message: str,
+) -> DocumentStatus:
+    """Fallo permanente: se marca el documento y el span queda en ERROR con el código."""
+    span.set_status(Status(StatusCode.ERROR, code))
+    span.set_attribute("error.code", code)
+    mark_failed(session_factory, document_id, code, message)
+    return DocumentStatus.FAILED
 
 
 def mark_failed(

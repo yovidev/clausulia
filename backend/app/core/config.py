@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     otel_enabled: bool = True
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    otel_service_name: str | None = None  # si falta, cada proceso usa su nombre por defecto
     log_level: str = "INFO"
 
     default_org_id: str = "default"

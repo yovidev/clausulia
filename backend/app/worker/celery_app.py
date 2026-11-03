@@ -1,6 +1,10 @@
-from celery import Celery
+from typing import Any
+
+from celery import Celery, signals
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.core.telemetry import setup_telemetry, shutdown_telemetry
 
 settings = get_settings()
 
@@ -27,3 +31,21 @@ celery_app.conf.update(
         }
     },
 )
+
+
+@signals.setup_logging.connect(weak=False)
+def _configure_logging(**kwargs: Any) -> None:
+    # Conectar esta señal evita que Celery configure su propio formato de logs.
+    configure_logging(settings.log_level)
+
+
+@signals.worker_process_init.connect(weak=False)
+def _init_telemetry(**kwargs: Any) -> None:
+    # Con prefork cada proceso hijo necesita su propio provider (el BatchSpanProcessor usa
+    # un hilo, y los hilos no sobreviven al fork). Por eso no se configura en el padre.
+    setup_telemetry(settings.otel_service_name or "clausulia-worker", settings)
+
+
+@signals.worker_process_shutdown.connect(weak=False)
+def _shutdown_telemetry(**kwargs: Any) -> None:
+    shutdown_telemetry()

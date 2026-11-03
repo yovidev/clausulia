@@ -48,11 +48,36 @@ services:
       postgres:
         condition: service_healthy
 
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      OTEL_SERVICE_NAME: clausulia-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    healthcheck:
+      # La imagen slim no trae curl: urlopen falla (exit 1) si /health no responde 200.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
   worker:
     <<: *backend
     # --beat embebido: un solo proceso programa el barrido de atascados (MVP)
     command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO",
               "--concurrency=2", "--beat", "-E"]
+    environment:
+      OTEL_SERVICE_NAME: clausulia-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
     depends_on:
       postgres:
         condition: service_healthy

@@ -158,6 +158,8 @@ def test_missing_file_is_marked_failed(
 
 
 class _BrokenEmbedder:
+    name = "broken"
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         raise ConnectionError("el modelo no responde")
 

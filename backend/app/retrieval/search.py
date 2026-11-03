@@ -4,11 +4,15 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from opentelemetry import trace
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.core.telemetry import timed_span
 from app.db.models import Chunk, Document, DocumentStatus
 from app.ingestion.embeddings import Embedder
+
+tracer = trace.get_tracer(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,42 +44,51 @@ def search_chunks(
 
     Activa el escaneo iterativo de HNSW solo en la transacción actual (SET LOCAL).
     """
-    vector = embedder.embed_query(question)
-    # El índice no conoce la organización: filtra después de elegir candidatos y podría
-    # dejar menos de k. El escaneo iterativo sigue buscando, en orden exacto por distancia.
-    session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
-    # <=> en SQL: el mismo operador que el índice HNSW (vector_cosine_ops).
-    distance = Chunk.embedding.cosine_distance(vector).label("distance")
+    with timed_span(tracer, "embed_query", {"embeddings.model": embedder.name}):
+        vector = embedder.embed_query(question)
+    with timed_span(
+        tracer, "pgvector.search", {"search.k": k, "search.threshold": threshold}
+    ) as span:
+        # El índice no conoce la organización: filtra después de elegir candidatos y podría
+        # dejar menos de k. El escaneo iterativo sigue buscando, en orden exacto por distancia.
+        session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+        # <=> en SQL: el mismo operador que el índice HNSW (vector_cosine_ops).
+        distance = Chunk.embedding.cosine_distance(vector).label("distance")
 
-    query = (
-        select(
-            Chunk.id,
-            Chunk.document_id,
-            Document.filename,
-            Chunk.page_number,
-            Chunk.content,
-            distance,
+        query = (
+            select(
+                Chunk.id,
+                Chunk.document_id,
+                Document.filename,
+                Chunk.page_number,
+                Chunk.content,
+                distance,
+            )
+            .join(Document, Chunk.document_id == Document.id)
+            .where(
+                Document.organization_id == organization_id,
+                Document.status == DocumentStatus.READY,
+            )
+            .order_by(distance)
+            .limit(k)
         )
-        .join(Document, Chunk.document_id == Document.id)
-        .where(
-            Document.organization_id == organization_id,
-            Document.status == DocumentStatus.READY,
-        )
-        .order_by(distance)
-        .limit(k)
-    )
-    if document_ids is not None:
-        query = query.where(Chunk.document_id.in_(document_ids))
+        if document_ids is not None:
+            query = query.where(Chunk.document_id.in_(document_ids))
 
-    chunks = [
-        RetrievedChunk(
-            chunk_id=row.id,
-            document_id=row.document_id,
-            document_name=row.filename,
-            page_number=row.page_number,
-            content=row.content,
-            similarity=round(1.0 - float(row.distance), 4),
-        )
-        for row in session.execute(query)
-    ]
-    return RetrievalResult(chunks=chunks, relevant=[c for c in chunks if c.similarity >= threshold])
+        chunks = [
+            RetrievedChunk(
+                chunk_id=row.id,
+                document_id=row.document_id,
+                document_name=row.filename,
+                page_number=row.page_number,
+                content=row.content,
+                similarity=round(1.0 - float(row.distance), 4),
+            )
+            for row in session.execute(query)
+        ]
+        relevant = [c for c in chunks if c.similarity >= threshold]
+        span.set_attribute("chunks.retrieved", len(chunks))
+        span.set_attribute("chunks.relevant", len(relevant))
+        if chunks:
+            span.set_attribute("similarity.top", chunks[0].similarity)
+    return RetrievalResult(chunks=chunks, relevant=relevant)

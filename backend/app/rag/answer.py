@@ -4,11 +4,14 @@ import uuid
 from dataclasses import dataclass, field
 
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import Span
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.telemetry import timed_span
 from app.db.models import Document, DocumentStatus
 from app.ingestion.embeddings import Embedder
 from app.llm.base import LLMProvider
@@ -18,6 +21,7 @@ from app.retrieval.search import RetrievedChunk, search_chunks
 from app.schemas.ask import AskIn, AskOut, CitationOut, Confidence, LLMAnswer
 
 log = structlog.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
 
 SNIPPET_CHARS = 300
 NO_EVIDENCE = "No hay evidencia suficiente en los documentos para responder la pregunta."
@@ -37,6 +41,21 @@ class AnswerOutcome:
 
 
 def answer_question(
+    session: Session,
+    embedder: Embedder,
+    llm: LLMProvider,
+    settings: Settings,
+    organization_id: str,
+    ask: AskIn,
+) -> AnswerOutcome:
+    with timed_span(tracer, "ask", {"organization.id": organization_id}) as span:
+        outcome = _answer(session, embedder, llm, settings, organization_id, ask)
+        span.set_attribute("ask.status", outcome.response.status)
+        span.set_attribute("llm.called", outcome.llm_called)
+        return outcome
+
+
+def _answer(
     session: Session,
     embedder: Embedder,
     llm: LLMProvider,
@@ -71,10 +90,14 @@ def answer_question(
     if answer.insufficient_evidence:
         return outcome
 
-    by_id = {str(c.chunk_id): c for c in retrieval.relevant}
-    cited = [by_id[i] for i in dict.fromkeys(answer.citations) if i in by_id]
-    if len(cited) < len(answer.citations):
-        log.warning("llm_invalid_citations_dropped", dropped=len(answer.citations) - len(cited))
+    with tracer.start_as_current_span("validate_answer") as span:
+        by_id = {str(c.chunk_id): c for c in retrieval.relevant}
+        cited = [by_id[i] for i in dict.fromkeys(answer.citations) if i in by_id]
+        discarded = len(answer.citations) - len(cited)  # inventadas o repetidas
+        span.set_attribute("citations.valid", len(cited))
+        span.set_attribute("citations.discarded", discarded)
+    if discarded:
+        log.warning("llm_invalid_citations_dropped", dropped=discarded)
     if not cited:
         return outcome
 
@@ -108,9 +131,23 @@ def _check_documents(session: Session, organization_id: str, document_ids: list[
 
 def _ask_llm(llm: LLMProvider, user: str, outcome: AnswerOutcome) -> LLMAnswer | None:
     """Llama al LLM y valida su JSON. Un solo reintento con el error; None si vuelve a fallar."""
+    # Un solo span para ambos intentos: tokens y reintentos son la suma de los dos.
+    with timed_span(tracer, "llm.generate", {"llm.provider": llm.name}) as span:
+        try:
+            return _generate_valid(llm, user, outcome, span)
+        finally:
+            span.set_attribute("llm.tokens.input", outcome.tokens_input)
+            span.set_attribute("llm.tokens.output", outcome.tokens_output)
+            span.set_attribute("llm.retries", outcome.retries)
+
+
+def _generate_valid(
+    llm: LLMProvider, user: str, outcome: AnswerOutcome, span: Span
+) -> LLMAnswer | None:
     prompt = user
     for attempt in range(2):
         result = llm.generate(SYSTEM_PROMPT, prompt)
+        span.set_attribute("llm.model", result.model)
         outcome.llm_called = True
         outcome.tokens_input += result.tokens_input
         outcome.tokens_output += result.tokens_output
@@ -123,6 +160,7 @@ def _ask_llm(llm: LLMProvider, user: str, outcome: AnswerOutcome) -> LLMAnswer |
                 f"{user}\n\nTu respuesta anterior no era JSON válido según el esquema "
                 f"({_summarize(exc)}). Responde solo con el objeto JSON del esquema."
             )
+    span.set_attribute("llm.rejected", True)
     return None
 
 

@@ -13,6 +13,8 @@ _WORD = re.compile(r"\w+")
 
 
 class Embedder(Protocol):
+    name: str  # modelo usado, para las trazas
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
     def embed_query(self, text: str) -> list[float]: ...
@@ -25,6 +27,7 @@ class FastEmbedEmbedder:
         from fastembed import TextEmbedding  # import diferido: cargar el modelo tarda
 
         self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+        self.name = model_name
         self._batch_size = batch_size
         dim = len(self.embed_query("prueba"))
         if dim != EMBEDDING_DIM:
@@ -49,6 +52,8 @@ class FakeEmbedder:
     Textos que comparten palabras quedan cerca. No entiende sinónimos; para eso está
     el modelo real.
     """
+
+    name = "fake"
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._embed(text) for text in texts]
