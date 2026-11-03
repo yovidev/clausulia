@@ -75,9 +75,7 @@ def retrieved(monkeypatch: pytest.MonkeyPatch) -> list[RetrievedChunk]:
     chunks: list[RetrievedChunk] = []
 
     def fake_search(*args: Any, threshold: float, **kwargs: Any) -> RetrievalResult:
-        return RetrievalResult(
-            chunks=chunks, relevant=[c for c in chunks if c.similarity >= threshold]
-        )
+        return RetrievalResult.from_chunks(chunks, threshold)
 
     monkeypatch.setattr(answer_module, "search_chunks", fake_search)
     return chunks
@@ -90,10 +88,10 @@ def _ask(llm: ScriptedLLM, settings: Settings) -> AnswerOutcome:
     )
 
 
-def test_without_relevant_chunks_llm_is_not_called(
+def test_best_chunk_below_threshold_llm_is_not_called(
     settings: Settings, retrieved: list[RetrievedChunk]
 ) -> None:
-    retrieved.append(_chunk(0.2))  # por debajo del umbral
+    retrieved.extend([_chunk(0.34), _chunk(0.2)])  # el mejor no llega al umbral (0.35)
     llm = ScriptedLLM()
 
     outcome = _ask(llm, settings)
@@ -102,6 +100,24 @@ def test_without_relevant_chunks_llm_is_not_called(
     assert outcome.response.citations == []
     assert llm.prompts == []
     assert outcome.llm_called is False
+
+
+def test_best_chunk_above_threshold_sends_all_k_chunks_to_llm(
+    settings: Settings, retrieved: list[RetrievedChunk]
+) -> None:
+    strong, weak = _chunk(0.7, page=1), _chunk(0.2, page=2)  # weak, bajo el umbral
+    retrieved.extend([strong, weak])
+    llm = ScriptedLLM(_llm_json([weak.chunk_id]))
+
+    outcome = _ask(llm, settings)
+
+    [prompt] = llm.prompts
+    assert str(strong.chunk_id) in prompt
+    assert str(weak.chunk_id) in prompt
+    # Citar un chunk recuperado es válido aunque quede bajo el umbral...
+    assert [c.chunk_id for c in outcome.response.citations] == [weak.chunk_id]
+    # ...pero la confianza sale de la similitud de lo citado, no del mejor recuperado.
+    assert outcome.response.confidence == "low"
 
 
 def test_answered_with_citation_data(settings: Settings, retrieved: list[RetrievedChunk]) -> None:

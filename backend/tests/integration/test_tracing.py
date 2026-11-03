@@ -145,8 +145,9 @@ def test_answer_question_produces_expected_spans(
     assert search["search.k"] == settings.retrieval_k
     assert search["search.threshold"] == 0.3
     assert search["chunks.retrieved"] == 2
-    assert search["chunks.relevant"] >= 1  # type: ignore[operator]
-    assert search["similarity.top"] == outcome.similarities[0]
+    assert search["search.mode"] == settings.retrieval_mode
+    assert search["evidence.sufficient"] is True
+    assert search["similarity.top"] == max(outcome.similarities)
 
     llm = _attrs(spans["llm.generate"])
     assert llm["llm.provider"] == "mock"

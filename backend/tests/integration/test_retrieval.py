@@ -11,7 +11,7 @@ from app.db.models import Document, DocumentStatus
 from app.ingestion.embeddings import FakeEmbedder
 from app.ingestion.extraction import PypdfExtractor
 from app.ingestion.service import run_ingestion
-from app.retrieval.search import RetrievalMode, RetrievalResult, search_chunks
+from app.retrieval.search import RetrievalResult, search_chunks
 from tests.factories import make_pdf
 
 pytestmark = pytest.mark.integration
@@ -85,7 +85,8 @@ def test_returns_expected_chunk_first_with_citation_data(
     assert top.document_name == "contrato.pdf"
     assert top.page_number == 2
     assert "penalizacion" in top.content
-    assert top in result.relevant
+    assert result.has_evidence
+    assert result.best_similarity == top.similarity
     similarities = [c.similarity for c in result.chunks]
     assert similarities == sorted(similarities, reverse=True)
     assert all(round(s, 4) == s for s in similarities)
@@ -144,16 +145,34 @@ def test_filters_by_document_ids(
     assert [c.document_id for c in result.chunks] == [other]
 
 
-def test_high_threshold_leaves_relevant_empty_but_keeps_all_chunks(
+def test_threshold_only_decides_on_the_best_chunk(
     session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
 ) -> None:
     _ingest(session_factory, settings, CONTRACT_PAGES)
+    with session_factory() as session:
+        best = search_chunks(session, embedder, QUESTION, "org-a", k=3, threshold=0.0)
+    top = best.chunks[0].similarity
+    assert best.chunks[-1].similarity < top  # hay chunks por debajo del mejor
 
     with session_factory() as session:
-        result = search_chunks(session, embedder, QUESTION, "org-a", k=3, threshold=0.99)
+        just_above = search_chunks(session, embedder, QUESTION, "org-a", k=3, threshold=top)
+        above = search_chunks(session, embedder, QUESTION, "org-a", k=3, threshold=top + 0.01)
 
-    assert len(result.chunks) == 3
-    assert result.relevant == []
+    # Si el mejor llega al umbral, hay evidencia y se devuelven los k, también los peores.
+    assert just_above.has_evidence
+    assert len(just_above.chunks) == 3
+    # Si no llega, no hay evidencia, aunque los chunks se sigan devolviendo (para trazas).
+    assert not above.has_evidence
+    assert len(above.chunks) == 3
+
+
+def test_no_chunks_means_no_evidence(
+    session_factory: sessionmaker[Session], embedder: FakeEmbedder
+) -> None:
+    with session_factory() as session:
+        result = search_chunks(session, embedder, QUESTION, "org-a", k=3, threshold=0.0)
+
+    assert (result.chunks, result.best_similarity, result.has_evidence) == ([], None, False)
 
 
 def test_iterative_scan_applies_only_to_the_current_transaction(
@@ -207,7 +226,6 @@ def _hybrid(
         mode="hybrid",
         candidates=10,
         rrf_k=60,
-        text_margin=0.10,
     )
 
 
@@ -223,7 +241,7 @@ def test_hybrid_finds_exact_name_that_vector_misses(
 
     assert NAME_PAGE not in [c.content for c in by_vector.chunks]
     top = hybrid.chunks[0]
-    assert (top.content, top.page_number, top.text_match) == (NAME_PAGE, 4, True)
+    assert (top.content, top.page_number) == (NAME_PAGE, 4)
     # La similitud es la coseno real, la misma que calcula el modo vector.
     assert top.similarity == next(c.similarity for c in everything.chunks if c.content == NAME_PAGE)
 
@@ -237,7 +255,7 @@ def test_hybrid_finds_exact_date(
         result = _hybrid(session, embedder, DATE_QUESTION, k=1)
 
     # El parser de Postgres guarda la fecha como un solo término: '15/03/2027'.
-    assert [(c.content, c.text_match) for c in result.chunks] == [(DATE_PAGE, True)]
+    assert [c.content for c in result.chunks] == [DATE_PAGE]
 
 
 def test_hybrid_respects_org_in_both_branches(
@@ -252,7 +270,7 @@ def test_hybrid_respects_org_in_both_branches(
 
     assert len(result.chunks) == len(NOISE_PAGES)
     assert {c.document_id for c in result.chunks} == {own}
-    assert not any(c.text_match for c in result.chunks)
+    assert NAME_PAGE not in [c.content for c in result.chunks]
 
 
 def test_hybrid_text_branch_respects_status_and_document_ids(
@@ -270,36 +288,23 @@ def test_hybrid_text_branch_respects_status_and_document_ids(
 
     for result in (filtered, not_ready):
         assert {c.document_id for c in result.chunks} == {noise}
-        assert not any(c.text_match for c in result.chunks)
 
 
-def test_hybrid_text_match_lowers_threshold_only_by_the_margin(
+def test_hybrid_decides_evidence_with_cosine_not_with_words(
     session_factory: sessionmaker[Session], settings: Settings, embedder: FakeEmbedder
 ) -> None:
     _ingest(session_factory, settings, [*NOISE_PAGES, NAME_PAGE])
     with session_factory() as session:
-        similarity = _hybrid(session, embedder, NAME_QUESTION).chunks[0].similarity
+        result = _hybrid(session, embedder, NAME_QUESTION)
+    assert result.chunks[0].content == NAME_PAGE  # primero por RRF gracias al full-text
+    assert result.best_similarity is not None
 
-    def relevant(threshold: float, mode: RetrievalMode) -> list[str]:
-        with session_factory() as session:
-            result = search_chunks(
-                session,
-                embedder,
-                NAME_QUESTION,
-                "org-a",
-                k=10,
-                threshold=threshold,
-                mode=mode,
-                text_margin=0.10,
-            )
-        return [c.content for c in result.relevant]
+    with session_factory() as session:
+        strict = _hybrid(session, embedder, NAME_QUESTION, threshold=result.best_similarity + 0.01)
 
-    # Por debajo del umbral pero dentro del margen: el dato exacto no se pierde...
-    assert NAME_PAGE in relevant(similarity + 0.05, "hybrid")
-    # ...en modo vector ese mismo chunk queda fuera...
-    assert NAME_PAGE not in relevant(similarity + 0.05, "vector")
-    # ...y fuera del margen, coincidir por palabras no basta.
-    assert NAME_PAGE not in relevant(similarity + 0.15, "hybrid")
+    # Coincidir por palabras lo sube en el ranking, pero no basta para pasar el umbral.
+    assert strict.chunks[0].content == NAME_PAGE
+    assert not strict.has_evidence
 
 
 def test_vector_mode_ignores_full_text(
@@ -310,6 +315,5 @@ def test_vector_mode_ignores_full_text(
     with session_factory() as session:
         result = search_chunks(session, embedder, NAME_QUESTION, "org-a", k=4, threshold=0.0)
 
-    assert not any(c.text_match for c in result.chunks)
     similarities = [c.similarity for c in result.chunks]
     assert similarities == sorted(similarities, reverse=True)

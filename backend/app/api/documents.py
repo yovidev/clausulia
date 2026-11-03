@@ -86,6 +86,7 @@ def list_documents(session: DbSession, org_id: OrgId) -> DocumentListOut:
     documents = session.scalars(
         select(Document)
         .where(Document.organization_id == org_id)
+        # Desempate por id: con la misma marca de tiempo el orden sigue siendo determinista.
         .order_by(Document.created_at.desc(), Document.id)
     ).all()
     return DocumentListOut(items=[DocumentOut.model_validate(d) for d in documents])

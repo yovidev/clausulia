@@ -180,3 +180,40 @@ def test_transient_failure_leaves_no_partial_chunks(
     # Queda en 'processing' para que Celery lo reintente, y sin chunks a medias.
     assert document.status == DocumentStatus.PROCESSING
     assert _chunk_count(session_factory, document_id) == 0
+
+
+class RecordingEmbedder(FakeEmbedder):
+    """FakeEmbedder que guarda los textos que recibe para vectorizar."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.texts.extend(texts)
+        return super().embed_documents(texts)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_document_title_header_is_embedded_but_not_stored(
+    session_factory: sessionmaker[Session], settings: Settings, enabled: bool
+) -> None:
+    document_id = _create_document(session_factory, settings, CONTRACT_PAGES)
+    with session_factory() as session, session.begin():
+        session.get_one(Document, document_id).filename = "contrato_transporte-penalara.pdf"
+    embedder = RecordingEmbedder()
+
+    _ingest(
+        document_id,
+        session_factory,
+        settings.model_copy(update={"embed_document_title": enabled}),
+        embedder,
+    )
+
+    with session_factory() as session:
+        query = select(Chunk.content).where(Chunk.document_id == document_id)
+        contents = session.scalars(query.order_by(Chunk.chunk_index)).all()
+    header = "Documento: contrato transporte penalara\n"
+    expected = [header + c for c in contents] if enabled else list(contents)
+    assert embedder.texts == expected
+    # El content guardado (el que se muestra y se cita) no lleva la cabecera.
+    assert not any(c.startswith("Documento:") for c in contents)

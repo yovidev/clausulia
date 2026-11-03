@@ -1,8 +1,10 @@
 """Ingesta de un documento: extraer, trocear, vectorizar y guardar de forma atómica."""
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePath
 
 import structlog
 from opentelemetry import trace
@@ -85,7 +87,8 @@ def _ingest(
         "embeddings.model": embedder.name,
     }
     with tracer.start_as_current_span("embeddings", attributes=embed_attributes):
-        vectors = embedder.embed_documents([c.content for c in chunks])
+        title = document_title(claim.filename) if settings.embed_document_title else None
+        vectors = embedder.embed_documents([embedding_text(c.content, title) for c in chunks])
 
     with (
         tracer.start_as_current_span("db.write_chunks", attributes={"chunks.count": len(chunks)}),
@@ -122,8 +125,23 @@ def _ingest(
 @dataclass(frozen=True)
 class _Claim:
     sha256: str
+    filename: str
     organization_id: str
     attempt: int
+
+
+def document_title(filename: str) -> str:
+    """Nombre legible para la cabecera: sin extensión y con _ y - como espacios."""
+    return re.sub(r"[_-]+", " ", PurePath(filename).stem).strip()
+
+
+def embedding_text(content: str, title: str | None) -> str:
+    """Texto que se vectoriza. El content guardado y mostrado no cambia.
+
+    Con título (contextual chunk header), el vector sabe de qué documento es el chunk:
+    "el contrato con Peñalara" puede acercarse a una cláusula que no nombra al proveedor.
+    """
+    return f"Documento: {title}\n{content}" if title else content
 
 
 def _claim(session_factory: sessionmaker[Session], document_id: uuid.UUID) -> _Claim | None:
@@ -141,7 +159,9 @@ def _claim(session_factory: sessionmaker[Session], document_id: uuid.UUID) -> _C
         document.processing_started_at = datetime.now(UTC)
         document.error_code = None
         document.error_message = None
-        return _Claim(document.sha256, document.organization_id, document.attempts)
+        return _Claim(
+            document.sha256, document.filename, document.organization_id, document.attempts
+        )
 
 
 def _fail(

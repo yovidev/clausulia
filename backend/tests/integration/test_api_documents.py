@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -233,17 +234,44 @@ def test_get_document_is_isolated_by_org(client: TestClient, pdf_bytes: bytes) -
     assert other.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
 
 
-def test_list_documents_is_isolated_and_newest_first(client: TestClient, tmp_path: Path) -> None:
+def _set_created_at(session_factory: sessionmaker[Session], times: dict[str, datetime]) -> None:
+    """Fija created_at a mano: dos subidas seguidas pueden tener la misma marca (o incluso
+    invertida si el reloj de la máquina virtual de Docker se reajusta)."""
+    with session_factory() as session, session.begin():
+        for document_id, created_at in times.items():
+            session.get_one(Document, uuid.UUID(document_id)).created_at = created_at
+
+
+def test_list_documents_is_isolated_and_newest_first(
+    client: TestClient, session_factory: sessionmaker[Session], tmp_path: Path
+) -> None:
     older = make_pdf(tmp_path / "1.pdf", ["uno"]).read_bytes()
     newer = make_pdf(tmp_path / "2.pdf", ["dos"]).read_bytes()
     first = _upload(client, older, org="org-a").json()["id"]
     second = _upload(client, newer, org="org-a").json()["id"]
     _upload(client, older, org="org-b")
+    now = datetime.now(UTC)
+    _set_created_at(session_factory, {first: now - timedelta(minutes=1), second: now})
 
     response = client.get("/documents", headers={"X-Org-Id": "org-a"})
 
     assert response.status_code == 200
     assert [d["id"] for d in response.json()["items"]] == [second, first]
+
+
+def test_list_documents_breaks_ties_by_id(
+    client: TestClient, session_factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    ids = [
+        _upload(client, make_pdf(tmp_path / f"{i}.pdf", [f"doc {i}"]).read_bytes()).json()["id"]
+        for i in range(3)
+    ]
+    same = datetime.now(UTC)
+    _set_created_at(session_factory, dict.fromkeys(ids, same))
+
+    response = client.get("/documents")
+
+    assert [d["id"] for d in response.json()["items"]] == sorted(ids)
 
 
 def test_get_chunk_is_isolated_by_org(
