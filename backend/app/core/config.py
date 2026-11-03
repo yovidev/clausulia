@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=150, ge=0)
     retrieval_k: int = Field(default=6, gt=0, le=50)
     similarity_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Similitud mínima del mejor chunk citado para cada nivel de confianza (se calibran).
+    confidence_high_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
+    confidence_medium_similarity: float = Field(default=0.45, ge=0.0, le=1.0)
 
     llm_provider: Literal["mock", "openai"] = "mock"
     openai_api_key: SecretStr | None = None
@@ -44,6 +47,10 @@ class Settings(BaseSettings):
     def check_consistency(self) -> Self:
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("CHUNK_OVERLAP debe ser menor que CHUNK_SIZE")
+        if self.confidence_medium_similarity > self.confidence_high_similarity:
+            raise ValueError(
+                "CONFIDENCE_MEDIUM_SIMILARITY no puede superar CONFIDENCE_HIGH_SIMILARITY"
+            )
         if self.llm_provider == "openai" and (self.openai_api_key is None or not self.openai_model):
             raise ValueError("LLM_PROVIDER=openai requiere OPENAI_API_KEY y OPENAI_MODEL")
         return self

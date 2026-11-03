@@ -15,7 +15,9 @@ class ApiError(Exception):
         self.message = message
 
 
-def error_response(status_code: int, code: str, message: str) -> JSONResponse:
+def error_response(
+    status_code: int, code: str, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
     # trace_id se rellenará en el paso de observabilidad.
     body = ErrorOut(error=ErrorDetail(code=code, message=message, trace_id=""))
-    return JSONResponse(status_code=status_code, content=body.model_dump())
+    return JSONResponse(status_code=status_code, content=body.model_dump(), headers=headers)

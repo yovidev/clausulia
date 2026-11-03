@@ -203,6 +203,7 @@ def test_openai_reads_text_model_and_tokens_and_requests_strict_json() -> None:
     assert result.text == json.dumps(VALID)
     assert result.model == "gpt-test-2026"
     assert (result.tokens_input, result.tokens_output) == (120, 35)
+    assert result.retries == 0
     call = responses.calls[0]
     assert call["instructions"] == "sistema"
     assert call["input"] == "usuario"
@@ -223,6 +224,7 @@ def test_openai_retries_429_respecting_retry_after_then_succeeds() -> None:
     assert result.tokens_input == 120
     assert len(responses.calls) == 2
     assert sleeps == [2.0]
+    assert result.retries == 1
 
 
 def test_openai_retries_5xx_with_backoff_and_maps_final_error() -> None:

@@ -13,7 +13,8 @@ class AskIn(BaseModel):
     question: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=3, max_length=1000)
     ]
-    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+    # None = todos los documentos de la organización; una lista vacía no tiene sentido.
+    document_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=50)
 
 
 class LLMAnswer(BaseModel):

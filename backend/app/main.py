@@ -1,5 +1,7 @@
 """Aplicación FastAPI: routers y manejo uniforme de errores."""
 
+import math
+
 import kombu.exceptions
 import redis.exceptions
 import structlog
@@ -9,8 +11,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import documents, health
+from app.api import ask, documents, health
 from app.api.errors import ApiError, error_response
+from app.llm.base import LLMProviderError, LLMRateLimitError, LLMTimeoutError
+from app.rag.errors import DocumentNotFoundError, DocumentNotReadyError
 
 log = structlog.get_logger(__name__)
 
@@ -52,6 +56,38 @@ async def handle_broker_error(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def handle_document_not_found(request: Request, exc: DocumentNotFoundError) -> JSONResponse:
+    ids = ", ".join(str(i) for i in exc.document_ids)
+    return error_response(404, "DOCUMENT_NOT_FOUND", f"Documentos no encontrados: {ids}")
+
+
+async def handle_document_not_ready(request: Request, exc: DocumentNotReadyError) -> JSONResponse:
+    ids = ", ".join(str(i) for i in exc.document_ids)
+    return error_response(409, "DOCUMENT_NOT_READY", f"Documentos que aún no están listos: {ids}")
+
+
+async def handle_llm_rate_limit(request: Request, exc: LLMRateLimitError) -> JSONResponse:
+    headers = None
+    if exc.retry_after is not None:
+        headers = {"Retry-After": str(max(1, math.ceil(exc.retry_after)))}
+    return error_response(
+        429,
+        "LLM_RATE_LIMITED",
+        "El proveedor de LLM está limitando las peticiones; inténtalo más tarde",
+        headers,
+    )
+
+
+async def handle_llm_timeout(request: Request, exc: LLMTimeoutError) -> JSONResponse:
+    log.warning("llm_timeout", error=str(exc))
+    return error_response(504, "LLM_TIMEOUT", "El proveedor de LLM no respondió a tiempo")
+
+
+async def handle_llm_provider_error(request: Request, exc: LLMProviderError) -> JSONResponse:
+    log.error("llm_provider_error", error=str(exc))
+    return error_response(502, "LLM_PROVIDER_ERROR", "El proveedor de LLM devolvió un error")
+
+
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled_error")
     return error_response(500, "INTERNAL_ERROR", "Error interno del servidor")
@@ -61,6 +97,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Clausulia")
     app.include_router(health.router)
     app.include_router(documents.router)
+    app.include_router(ask.router)
 
     # El decorador acepta handlers tipados con su excepción concreta.
     app.exception_handler(ApiError)(handle_api_error)
@@ -69,6 +106,11 @@ def create_app() -> FastAPI:
     app.exception_handler(OperationalError)(handle_database_error)
     for error in BROKER_ERRORS:
         app.exception_handler(error)(handle_broker_error)
+    app.exception_handler(DocumentNotFoundError)(handle_document_not_found)
+    app.exception_handler(DocumentNotReadyError)(handle_document_not_ready)
+    app.exception_handler(LLMRateLimitError)(handle_llm_rate_limit)
+    app.exception_handler(LLMTimeoutError)(handle_llm_timeout)
+    app.exception_handler(LLMProviderError)(handle_llm_provider_error)
     app.exception_handler(Exception)(handle_unexpected_error)
     return app
 

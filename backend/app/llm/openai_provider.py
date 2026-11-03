@@ -47,8 +47,16 @@ class OpenAIProvider:
         )
 
     def generate(self, system: str, user: str) -> LLMResult:
+        attempts = 0
+
+        def attempt() -> Response:
+            # Contador local a la llamada: seguro aunque varias peticiones compartan el proveedor.
+            nonlocal attempts
+            attempts += 1
+            return self._create(system, user)
+
         try:
-            response = self._retrying(self._create, system, user)
+            response = self._retrying(attempt)
         except openai.APITimeoutError as exc:
             raise LLMTimeoutError("OpenAI no respondió a tiempo") from exc
         except openai.RateLimitError as exc:
@@ -64,6 +72,7 @@ class OpenAIProvider:
             model=response.model,
             tokens_input=usage.input_tokens if usage else 0,
             tokens_output=usage.output_tokens if usage else 0,
+            retries=attempts - 1,
         )
 
     def _create(self, system: str, user: str) -> Response:

@@ -10,6 +10,7 @@ class LLMResult:
     model: str
     tokens_input: int
     tokens_output: int
+    retries: int = 0  # reintentos internos del proveedor (429, 5xx)
 
 
 class LLMProvider(Protocol):
