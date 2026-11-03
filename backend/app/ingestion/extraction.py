@@ -33,6 +33,8 @@ class PypdfExtractor:
     def extract(self, path: Path, max_pages: int) -> list[PageText]:
         try:
             reader = PdfReader(path)
+        except FileNotFoundError:
+            raise  # no es un PDF inválido: el archivo no está; lo decide quien llama
         except (PdfReadError, ValueError, OSError) as exc:
             raise PdfExtractionError("INVALID_PDF", "El archivo no es un PDF válido") from exc
 
