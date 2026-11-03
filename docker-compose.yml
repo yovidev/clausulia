@@ -86,6 +86,14 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
   flower:
     <<: *backend
     command: ["celery", "-A", "app.worker.celery_app", "flower", "--port=5555"]

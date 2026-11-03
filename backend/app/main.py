@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import ask, documents, health
 from app.api.errors import ApiError, error_response
+from app.api.validation import validation_message
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.telemetry import setup_telemetry
@@ -37,8 +38,7 @@ async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
 
 
 async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-    fields = ", ".join(".".join(str(part) for part in e["loc"]) for e in exc.errors())
-    return error_response(422, "VALIDATION_ERROR", f"Datos de entrada inválidos: {fields}")
+    return error_response(422, "VALIDATION_ERROR", validation_message(exc.errors()))
 
 
 async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
