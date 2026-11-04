@@ -18,7 +18,7 @@ Si alguien sube dos veces el mismo archivo, lo detecto por su hash y devuelvo el
  
 Si no encuentro ningún fragmento suficientemente parecido a la pregunta, respondo que no hay evidencia y ni siquiera llamo al LLM. Me ahorro el costo y elimino la posibilidad de que invente.
  
-Si dos contratos dicen cosas distintas, muestro las dos versiones con sus citas y aviso del conflicto. No elijo una, porque el sistema no sabe qué contrato está vigente; eso lo tiene que decidir el analista.
+Si dos contratos dicen cosas distintas, muestro las dos versiones con sus citas y aviso del conflicto. No elijo una, porque el sistema no sabe qué contrato está vigente; eso lo tiene que decidir el analista. Quien detecta la contradicción es el LLM, así que esto solo se ve con un modelo real: el proveedor simulado siempre cita el primer fragmento y nunca marca conflictos. Lo dejé explicado en el README para que no parezca un fallo.
  
 Cada pregunta se responde sola, sin memoria de la conversación. Con memoria, una pregunta como "¿y en el otro?" dependería de respuestas anteriores que podrían estar mal, y verificar las citas sería más difícil.
  
@@ -49,6 +49,8 @@ Con eso, si la tarea se ejecuta dos veces, la segunda ve que el documento ya est
 Celery solo confirma una tarea cuando termina, así que si el worker muere, la tarea vuelve a la cola. Solo reintento los errores que pueden arreglarse solos (la base de datos o la red), esperando cada vez un poco más. Un PDF corrupto no se reintenta, porque seguiría corrupto. Si no se puede cargar el modelo de embeddings, lo trato igual que un error de red: reintento y, si sigue fallando, el documento queda fallido con su motivo.
  
 Aun así hay casos que no se cubren solos, como que Redis pierda la cola. Por eso cada cinco minutos una tarea busca documentos que lleven demasiado tiempo pendientes o en proceso y los vuelve a encolar. Si ya fallaron varias veces, los marca como fallidos. Así ningún documento se queda colgado para siempre.
+ 
+Lo vi funcionar en la verificación final, desde un clon limpio del repositorio. Reinicié el worker mientras procesaba un documento: la tarea volvió a la cola, el barrido también lo reencoló, y aun con dos tareas para el mismo documento quedó procesado una sola vez, con sus fragmentos sin duplicar.
  
 ## La búsqueda
  
@@ -115,6 +117,7 @@ El CI de GitHub revisa estilo, tipos y tests del backend contra un Postgres real
 - Evaluar la calidad de la respuesta completa, no solo de la búsqueda.
 - Borrar documentos, paginar la lista y guardar los archivos en S3.
 - Un tiempo máximo total por pregunta en la API.
+- Un tiempo máximo por tarea en Celery. En la verificación final, con mi conexión lenta, la descarga del modelo se quedó colgada sin llegar a fallar y ocupó un proceso del worker. Con un límite de tiempo, la tarea se cancelaría y se reintentaría sola.
 - Agentes. La vacante los menciona, pero este problema es de buscar y citar.
 ## Cómo usé la IA
  
