@@ -35,7 +35,8 @@ class MockProvider:
 
     @staticmethod
     def _answer(user: str) -> LLMAnswer:
-        # Los bloques llegan ordenados por similitud: el primero es el más cercano.
+        # Los bloques llegan en el orden de la recuperación: por similitud en modo vector,
+        # por Reciprocal Rank Fusion en modo hybrid. Cita siempre el primero.
         match = _CHUNK.search(user)
         if match is None:
             return LLMAnswer(

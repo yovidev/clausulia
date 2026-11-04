@@ -56,7 +56,7 @@ MVP RAG con citas para contratos de proveedores. El analista sube PDFs; un worke
 - `app/worker/celery_app.py`: `acks_late`, `reject_on_worker_lost`, `prefetch_multiplier=1`, `ignore_result`, `visibility_timeout=3600`, beat cada 5 minutos.
 - `app/retrieval/search.py`: `search_chunks` en modo `vector` o `hybrid` (columna generada `chunks.content_tsv` con índice GIN, migración `a3f1c2d4e5b6`). Devuelve los k chunks, la mejor similitud y `has_evidence`.
 - `scripts/generate_samples.py` genera `samples/` (contratos ficticios, uno escaneado y uno con prompt injection); `eval/run_eval.py` evalúa la recuperación con `eval/questions.yaml`.
-- `app/worker/tasks.py`: `ingest_document` (reintenta solo `OperationalError`, `ConnectionError` y `TimeoutError`, con backoff exponencial y jitter, máximo 5; al agotar, `INGESTION_FAILED`), `recover_stuck_documents`, `enqueue_ingestion(document_id)` (punto único para encolar desde la API).
+- `app/worker/tasks.py`: `ingest_document` (carga el embedder antes de reclamar el documento; reintenta solo `OperationalError`, `ConnectionError`, `TimeoutError` y `EmbeddingsUnavailableError` (cualquier fallo de `get_embedder`), con backoff exponencial y jitter, máximo 5; al agotar, `EMBEDDINGS_UNAVAILABLE` si falló el modelo o `INGESTION_FAILED` en otro caso), `recover_stuck_documents`, `enqueue_ingestion(document_id)` (punto único para encolar desde la API).
 - Tests: 36 en verde (unitarios de chunking, extracción, embeddings y backoff; de integración de ingesta y recuperación).
 - `docker-compose.yml`: postgres (pgvector/pgvector:pg16), redis (redis:7-alpine), jaeger (jaegertracing/jaeger, v2).
 - `backend/Dockerfile`: python:3.12-slim + uv 0.13.6, dependencias en una capa separada, usuario sin privilegios `app` (uid 1000).
